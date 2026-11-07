@@ -1,4 +1,5 @@
 const FALLBACK_POLL_MS = 60_000;
+const AWAITING_REPLY_RECHECK_MS = 3000;
 
 export function buildListenerHtml(): string {
   return `<!doctype html>
@@ -26,11 +27,14 @@ export function buildListenerHtml(): string {
 <script>
 (() => {
   const FALLBACK_POLL_MS = ${FALLBACK_POLL_MS};
+  const AWAITING_REPLY_RECHECK_MS = ${AWAITING_REPLY_RECHECK_MS};
   const pending = new Map();
   let rpcId = 0;
   let timer = 0;
   let listening = false;
   let inFlight = false;
+  let syncRequested = false;
+  let replyRecheckTimer = 0;
   let bridgeReady = false;
   let streamAbort = null;
   let streamGeneration = 0;
@@ -300,7 +304,13 @@ export function buildListenerHtml(): string {
   }
 
   async function syncOnce() {
-    if (!listening || inFlight) return;
+    if (!listening) return;
+    if (inFlight) {
+      syncRequested = true;
+      return;
+    }
+    window.clearTimeout(replyRecheckTimer);
+    syncRequested = false;
     inFlight = true;
     let shouldContinue = false;
     try {
@@ -316,6 +326,7 @@ export function buildListenerHtml(): string {
         const state = result && result.structuredContent;
         if (state && state.awaitingReply) {
           setStatus('等待当前消息完成回传…');
+          replyRecheckTimer = window.setTimeout(() => void syncOnce(), AWAITING_REPLY_RECHECK_MS);
         } else {
           setIdleStatus();
         }
@@ -374,7 +385,7 @@ export function buildListenerHtml(): string {
       setStatus('监听错误：' + (error && error.message ? error.message : String(error)));
     } finally {
       inFlight = false;
-      if (listening && shouldContinue) {
+      if (listening && (syncRequested || shouldContinue)) {
         window.setTimeout(() => void syncOnce(), 0);
       }
     }
@@ -399,6 +410,8 @@ export function buildListenerHtml(): string {
 
   function stopListening() {
     listening = false;
+    syncRequested = false;
+    window.clearTimeout(replyRecheckTimer);
     toggleEl.textContent = '开始监听';
     window.clearInterval(timer);
     streamGeneration += 1;
